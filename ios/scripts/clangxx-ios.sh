@@ -1,7 +1,32 @@
 #!/usr/bin/env bash
 # Cross-compiler wrapper for iOS arm64 target (C++)
 set -euo pipefail
-REAL_CXX="$(xcrun -f clang++)"
+
+find_compiler() {
+  local tool="$1"
+  local cc
+  cc="$(xcrun -f "${tool}")"
+  local toolchain_usr
+  toolchain_usr="$(cd "$(dirname "${cc}")/.." && pwd)"
+  if [[ -d "${toolchain_usr}/include/c++/v1" ]]; then
+    echo "${cc}"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/${tool}" \
+    "/Applications/Xcode copy.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/${tool}"; do
+    if [[ -x "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "${cc}"
+}
+
+REAL_CXX="$(find_compiler clang++)"
 IOS_SDK="${IOS_SDK_PATH:-}"
 if [[ -z "${IOS_SDK}" ]]; then
   IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
