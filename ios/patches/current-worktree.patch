@@ -1,0 +1,474 @@
+diff --git a/common.gypi b/common.gypi
+index de83a566..8712f6c3 100644
+--- a/common.gypi
++++ b/common.gypi
+@@ -669,6 +669,56 @@
+           }],
+         ],
+       }],
++      ['OS=="ios"', {
++        'defines': ['_DARWIN_USE_64_BIT_INODE=1'],
++        'cflags': [
++          '-Wall',
++          '-Wendif-labels',
++          '-W',
++          '-Wno-unused-parameter',
++        ],
++        'cflags_cc': [
++          '-fno-strict-aliasing',
++          '-std=gnu++20',
++        ],
++        'xcode_settings': {
++          'ALWAYS_SEARCH_USER_PATHS': 'NO',
++          'GCC_CW_ASM_SYNTAX': 'NO',
++          'GCC_DYNAMIC_NO_PIC': 'NO',
++          'GCC_ENABLE_CPP_EXCEPTIONS': 'NO',
++          'GCC_ENABLE_CPP_RTTI': 'YES',
++          'GCC_ENABLE_PASCAL_STRINGS': 'NO',
++          'GCC_STRICT_ALIASING': 'NO',
++          'PREBINDING': 'NO',
++          'USE_HEADERMAP': 'NO',
++        },
++        'target_conditions': [
++          ['_type!="static_library"', {
++            'xcode_settings': {
++              'OTHER_LDFLAGS': [
++                '-Wl,-search_paths_first'
++              ],
++            },
++          }],
++        ],
++        'conditions': [
++          ['target_arch=="arm64"', {
++            'xcode_settings': {
++              'ARCHS': ['arm64'],
++              'OTHER_LDFLAGS!': [
++                '-Wl,-no_pie',
++              ],
++            },
++          }],
++          ['clang==1', {
++            'xcode_settings': {
++              'GCC_VERSION': 'com.apple.compilers.llvm.clang.1_0',
++              'CLANG_CXX_LANGUAGE_STANDARD': 'gnu++20',
++              'CLANG_CXX_LIBRARY': 'libc++',
++            },
++          }],
++        ],
++      }],
+       ['OS=="freebsd"', {
+         'ldflags': [
+           '-Wl,--export-dynamic',
+diff --git a/common_node.gypi b/common_node.gypi
+index 0bfbf728..a39c60a3 100644
+--- a/common_node.gypi
++++ b/common_node.gypi
+@@ -6,7 +6,7 @@
+         'cflags_cc!': ['-std=gnu++17'],
+         'cflags_cc': ['-std=gnu++20'],
+       }],
+-      ['OS=="mac" and clang==1', {
++      ['(OS=="mac" or OS=="ios") and clang==1', {
+         'xcode_settings': {
+           'CLANG_CXX_LANGUAGE_STANDARD': 'gnu++20',  # -std=gnu++20
+         },
+diff --git a/deps/undici/src/lib/dispatcher/client-h1.js b/deps/undici/src/lib/dispatcher/client-h1.js
+index 2b8fa05d..00fb9818 100644
+--- a/deps/undici/src/lib/dispatcher/client-h1.js
++++ b/deps/undici/src/lib/dispatcher/client-h1.js
+@@ -124,7 +124,9 @@ async function lazyllhttp () {
+ 
+ let llhttpInstance = null
+ let llhttpPromise = lazyllhttp()
+-llhttpPromise.catch()
++// iOS arm64 can fail llhttp wasm warmup under constrained executable-memory
++// modes; keep the rejection handled so startup-only commands still run.
++llhttpPromise.catch(() => {})
+ 
+ let currentParser = null
+ let currentBufferRef = null
+diff --git a/deps/undici/undici.js b/deps/undici/undici.js
+index 1ae9f5a1..88a7936c 100644
+--- a/deps/undici/undici.js
++++ b/deps/undici/undici.js
+@@ -5864,7 +5864,10 @@ var require_client_h1 = __commonJS({
+     __name(lazyllhttp, "lazyllhttp");
+     var llhttpInstance = null;
+     var llhttpPromise = lazyllhttp();
+-    llhttpPromise.catch();
++    // iOS arm64 can fail llhttp wasm warmup under constrained executable-memory
++    // modes; keep the rejection handled so startup-only commands still run.
++    llhttpPromise.catch(() => {
++    });
+     var currentParser = null;
+     var currentBufferRef = null;
+     var currentBufferSize = 0;
+diff --git a/deps/v8/src/base/build_config.h b/deps/v8/src/base/build_config.h
+index 9ed4c8f1..b7303ef8 100644
+--- a/deps/v8/src/base/build_config.h
++++ b/deps/v8/src/base/build_config.h
+@@ -28,6 +28,9 @@
+ #endif
+ 
+ // pthread_jit_write_protect is only available on arm64 Mac.
++// On iOS device builds we intentionally keep this disabled and use the
++// classic executable-page path, which is more stable on older jailbroken
++// runtimes.
+ #if defined(V8_HOST_ARCH_ARM64) && \
+     (defined(V8_OS_MACOS) || (defined(V8_OS_IOS) && TARGET_OS_SIMULATOR))
+ #define V8_HAS_PTHREAD_JIT_WRITE_PROTECT 1
+diff --git a/deps/v8/src/base/platform/platform-ios.cc b/deps/v8/src/base/platform/platform-ios.cc
+index f0fc1864..c4b414a2 100644
+--- a/deps/v8/src/base/platform/platform-ios.cc
++++ b/deps/v8/src/base/platform/platform-ios.cc
+@@ -4,18 +4,20 @@
+ 
+ #include "src/base/base-export.h"
+ #include "src/base/build_config.h"
++#include <dlfcn.h>
+ 
+-// pthread_jit_write_protect_np is marked as not available in the iOS
+-// SDK but it is there for the iOS simulator. So we provide a thunk
+-// and a forward declaration in a compilation target that doesn't
+-// include pthread.h to avoid the compiler error.
+-extern "C" void pthread_jit_write_protect_np(int enable);
++// pthread_jit_write_protect_np is not declared in iOS SDK headers.
++// Resolve it dynamically so this binary can still load on older runtimes.
++using pthread_jit_write_protect_np_t = void (*)(int);
+ 
+ namespace v8::base {
+ 
+ #if V8_HAS_PTHREAD_JIT_WRITE_PROTECT && defined(V8_OS_IOS)
+ V8_BASE_EXPORT void SetJitWriteProtected(int enable) {
+-  pthread_jit_write_protect_np(enable);
++  static pthread_jit_write_protect_np_t fn =
++      reinterpret_cast<pthread_jit_write_protect_np_t>(
++          dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np"));
++  if (fn != nullptr) fn(enable);
+ }
+ #endif
+ 
+diff --git a/deps/v8/src/base/platform/platform-posix.cc b/deps/v8/src/base/platform/platform-posix.cc
+index 529a0730..620b8875 100644
+--- a/deps/v8/src/base/platform/platform-posix.cc
++++ b/deps/v8/src/base/platform/platform-posix.cc
+@@ -144,9 +144,20 @@ int GetFlagsForMemoryPermission(OS::MemoryPermission access,
+   // hardened runtime/memory protection is enabled, which is optional (via code
+   // signing) on Intel-based Macs but mandatory on Apple silicon ones. See also
+   // https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon.
++  //
++  // On iOS devices without pthread_jit_* support, MAP_JIT mappings can become
++  // write-protected in a way that this runtime cannot reliably toggle.
++  // Keep classic RWX/RX permission transitions in that environment.
++#if V8_OS_IOS
++  if (V8_HAS_PTHREAD_JIT_WRITE_PROTECT &&
++      access == OS::MemoryPermission::kNoAccessWillJitLater) {
++    flags |= MAP_JIT;
++  }
++#else
+   if (access == OS::MemoryPermission::kNoAccessWillJitLater) {
+     flags |= MAP_JIT;
+   }
++#endif
+ #endif  // V8_OS_DARWIN
+   return flags;
+ }
+diff --git a/deps/v8/src/common/code-memory-access.cc b/deps/v8/src/common/code-memory-access.cc
+index 94328a12..7425f25a 100644
+--- a/deps/v8/src/common/code-memory-access.cc
++++ b/deps/v8/src/common/code-memory-access.cc
+@@ -12,7 +12,8 @@ ThreadIsolation::TrustedData ThreadIsolation::trusted_data_;
+ 
+ #if V8_HAS_PTHREAD_JIT_WRITE_PROTECT || V8_HAS_PKU_JIT_WRITE_PROTECT
+ thread_local int RwxMemoryWriteScope::code_space_write_nesting_level_ = 0;
+-#endif  // V8_HAS_PTHREAD_JIT_WRITE_PROTECT || V8_HAS_PKU_JIT_WRITE_PROTECT
++#endif  // V8_HAS_PTHREAD_JIT_WRITE_PROTECT || \
++        // V8_HAS_PKU_JIT_WRITE_PROTECT
+ 
+ #if V8_HAS_PKU_JIT_WRITE_PROTECT
+ 
+@@ -468,6 +469,23 @@ bool ThreadIsolation::MakeExecutable(Address address, size_t size) {
+ #endif  // V8_HAS_PKU_JIT_WRITE_PROTECT
+ }
+ 
++// static
++bool ThreadIsolation::SetPermissionsOnAllJitPages(
++    PageAllocator::Permission permission) {
++  base::MutexGuard guard(trusted_data_.jit_pages_mutex_);
++  PageAllocator* page_allocator = GetPlatformPageAllocator();
++  for (const auto& it : *trusted_data_.jit_pages_) {
++    JitPageReference jit_page(it.second, it.first);
++    if (!page_allocator->SetPermissions(reinterpret_cast<void*>(it.first),
++                                        jit_page.Size(), permission)) {
++      // Ignore failures on empty reserved pages; these may still be
++      // inaccessible placeholders and don't contain writable allocations yet.
++      if (!jit_page.Empty()) return false;
++    }
++  }
++  return true;
++}
++
+ // static
+ WritableJitAllocation ThreadIsolation::RegisterJitAllocation(
+     Address obj, size_t size, JitAllocationType type) {
+diff --git a/deps/v8/src/common/code-memory-access.h b/deps/v8/src/common/code-memory-access.h
+index 80d96bb4..954c76bf 100644
+--- a/deps/v8/src/common/code-memory-access.h
++++ b/deps/v8/src/common/code-memory-access.h
+@@ -127,7 +127,8 @@ class V8_NODISCARD RwxMemoryWriteScope {
+ #if V8_HAS_PTHREAD_JIT_WRITE_PROTECT || V8_HAS_PKU_JIT_WRITE_PROTECT
+   // This counter is used for supporting scope reentrance.
+   V8_EXPORT_PRIVATE static thread_local int code_space_write_nesting_level_;
+-#endif  // V8_HAS_PTHREAD_JIT_WRITE_PROTECT || V8_HAS_PKU_JIT_WRITE_PROTECT
++#endif  // V8_HAS_PTHREAD_JIT_WRITE_PROTECT || \
++        // V8_HAS_PKU_JIT_WRITE_PROTECT
+ };
+ 
+ class WritableJitPage;
+@@ -163,6 +164,10 @@ class V8_EXPORT ThreadIsolation {
+   // Make a page executable. Needs to be registered first. Should only be called
+   // if Enabled() is true.
+   V8_NODISCARD static bool MakeExecutable(Address address, size_t size);
++  // Process-wide fallback for platforms without fast per-thread permission
++  // switches (e.g. iOS devices without pthread_jit_* APIs).
++  V8_NODISCARD static bool SetPermissionsOnAllJitPages(
++      PageAllocator::Permission permission);
+ 
+   // Register a new JIT allocation for tracking and return a writable reference
+   // to it. All writes should go through the returned WritableJitAllocation
+diff --git a/deps/v8/src/common/globals.h b/deps/v8/src/common/globals.h
+index 00e855c4..01c7d60e 100644
+--- a/deps/v8/src/common/globals.h
++++ b/deps/v8/src/common/globals.h
+@@ -417,9 +417,14 @@ constexpr bool kPlatformRequiresCodeRange = true;
+ constexpr size_t kMaximalCodeRangeSize = 512 * MB;
+ constexpr size_t kMinExpectedOSPageSize = 64 * KB;  // OS page on PPC Linux
+ #elif V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_LOONG64 || V8_TARGET_ARCH_RISCV64
++#if V8_TARGET_OS_IOS
++// On iOS with MAP_JIT enabled, large code ranges can fail to reserve.
++constexpr size_t kMaximalCodeRangeSize = 128 * MB;
++#else
+ constexpr size_t kMaximalCodeRangeSize =
+     (COMPRESS_POINTERS_BOOL && !V8_EXTERNAL_CODE_SPACE_BOOL) ? 128 * MB
+                                                              : 256 * MB;
++#endif
+ constexpr size_t kMinExpectedOSPageSize = 4 * KB;  // OS page.
+ #elif V8_TARGET_ARCH_X64
+ constexpr size_t kMaximalCodeRangeSize =
+diff --git a/deps/v8/src/heap/code-range.cc b/deps/v8/src/heap/code-range.cc
+index cb336e15..e0db388b 100644
+--- a/deps/v8/src/heap/code-range.cc
++++ b/deps/v8/src/heap/code-range.cc
+@@ -361,10 +361,12 @@ uint8_t* CodeRange::RemapEmbeddedBuiltins(Isolate* isolate,
+       allocate_code_size;
+   void* hint = reinterpret_cast<void*>(code_region.begin() + hint_offset);
+ 
++  const PageAllocator::Permission embed_permission =
++      UseMapAsJittableMemory() ? PageAllocator::kNoAccessWillJitLater
++                               : PageAllocator::kNoAccess;
+   embedded_blob_code_copy =
+       reinterpret_cast<uint8_t*>(page_allocator()->AllocatePages(
+-          hint, allocate_code_size, kAllocatePageSize,
+-          PageAllocator::kNoAccessWillJitLater));
++          hint, allocate_code_size, kAllocatePageSize, embed_permission));
+ 
+   if (!embedded_blob_code_copy) {
+     V8::FatalProcessOutOfMemory(
+diff --git a/deps/v8/src/utils/allocation.cc b/deps/v8/src/utils/allocation.cc
+index dc8a3696..832dff93 100644
+--- a/deps/v8/src/utils/allocation.cc
++++ b/deps/v8/src/utils/allocation.cc
+@@ -214,10 +214,11 @@ VirtualMemory::VirtualMemory(v8::PageAllocator* page_allocator, size_t size,
+   DCHECK(IsAligned(size, page_allocator_->CommitPageSize()));
+   size_t page_size = page_allocator_->AllocatePageSize();
+   alignment = RoundUp(alignment, page_size);
++  const bool map_as_jit =
++      jit == JitPermission::kMapAsJittable && UseMapAsJittableMemory();
+   PageAllocator::Permission permissions =
+-      jit == JitPermission::kMapAsJittable
+-          ? PageAllocator::kNoAccessWillJitLater
+-          : PageAllocator::kNoAccess;
++      map_as_jit ? PageAllocator::kNoAccessWillJitLater
++                 : PageAllocator::kNoAccess;
+   Address address = reinterpret_cast<Address>(AllocatePages(
+       page_allocator_, hint, RoundUp(size, page_size), alignment, permissions));
+   if (address != kNullAddress) {
+diff --git a/deps/v8/src/utils/allocation.h b/deps/v8/src/utils/allocation.h
+index c1f72ac3..b6c7e580 100644
+--- a/deps/v8/src/utils/allocation.h
++++ b/deps/v8/src/utils/allocation.h
+@@ -7,6 +7,7 @@
+ 
+ #include "include/v8-platform.h"
+ #include "src/base/address-region.h"
++#include "src/base/build_config.h"
+ #include "src/base/compiler-specific.h"
+ #include "src/base/platform/memory.h"
+ #include "src/init/v8.h"
+@@ -185,6 +186,17 @@ inline bool SetPermissions(v8::PageAllocator* page_allocator, Address address,
+ // allocating executable pages.
+ enum class JitPermission { kNoJit, kMapAsJittable };
+ 
++// When pthread_jit_write_protect is unavailable on iOS devices, map-as-jitable
++// allocations end up permanently write-protected by the kernel. Force the
++// fallback path so we can rely on our own mprotect transitions.
++V8_INLINE bool UseMapAsJittableMemory() {
++#if defined(V8_TARGET_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
++  return false;
++#else
++  return true;
++#endif
++}
++
+ // Represents and controls an area of reserved memory.
+ class VirtualMemory final {
+  public:
+diff --git a/deps/v8/src/wasm/code-space-access.cc b/deps/v8/src/wasm/code-space-access.cc
+index b96c6cd4..b3e42921 100644
+--- a/deps/v8/src/wasm/code-space-access.cc
++++ b/deps/v8/src/wasm/code-space-access.cc
+@@ -4,11 +4,25 @@
+ 
+ #include "src/wasm/code-space-access.h"
+ 
++#include "src/base/page-allocator.h"
+ #include "src/common/code-memory-access-inl.h"
++#include "src/utils/allocation.h"
+ 
+ namespace v8::internal::wasm {
+ 
+ CodeSpaceWriteScope::CodeSpaceWriteScope()
+-    : rwx_write_scope_("For wasm::CodeSpaceWriteScope.") {}
++    : rwx_write_scope_("For wasm::CodeSpaceWriteScope.") {
++  if (!UseMapAsJittableMemory()) {
++    CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
++        PageAllocator::Permission::kReadWriteExecute));
++  }
++}
++
++CodeSpaceWriteScope::~CodeSpaceWriteScope() {
++  if (!UseMapAsJittableMemory()) {
++    CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
++        PageAllocator::Permission::kReadExecute));
++  }
++}
+ 
+ }  // namespace v8::internal::wasm
+diff --git a/deps/v8/src/wasm/code-space-access.h b/deps/v8/src/wasm/code-space-access.h
+index a6e29a81..050a2c20 100644
+--- a/deps/v8/src/wasm/code-space-access.h
++++ b/deps/v8/src/wasm/code-space-access.h
+@@ -43,6 +43,7 @@ class NativeModule;
+ class V8_NODISCARD CodeSpaceWriteScope final {
+  public:
+   explicit V8_EXPORT_PRIVATE CodeSpaceWriteScope();
++  V8_EXPORT_PRIVATE ~CodeSpaceWriteScope();
+ 
+   // Disable copy constructor and copy-assignment operator, since this manages
+   // a resource and implicit copying of the scope can yield surprising errors.
+diff --git a/deps/v8/src/wasm/function-compiler.cc b/deps/v8/src/wasm/function-compiler.cc
+index 8687e596..48e38f7d 100644
+--- a/deps/v8/src/wasm/function-compiler.cc
++++ b/deps/v8/src/wasm/function-compiler.cc
+@@ -13,6 +13,7 @@
+ #include "src/logging/log.h"
+ #include "src/objects/code-inl.h"
+ #include "src/wasm/baseline/liftoff-compiler.h"
++#include "src/wasm/code-space-access.h"
+ #include "src/wasm/compilation-environment-inl.h"
+ #include "src/wasm/turboshaft-graph-interface.h"
+ #include "src/wasm/wasm-code-manager.h"
+@@ -229,7 +230,16 @@ void JSToWasmWrapperCompilationUnit::Execute() {
+ }
+ 
+ Handle<Code> JSToWasmWrapperCompilationUnit::Finalize() {
++  CodeSpaceWriteScope code_space_write_scope;
++#if defined(V8_OS_IOS)
++  CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
++      PageAllocator::Permission::kReadWriteExecute));
++#endif
+   CompilationJob::Status status = job_->FinalizeJob(isolate_);
++#if defined(V8_OS_IOS)
++  CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
++      PageAllocator::Permission::kReadExecute));
++#endif
+   CHECK_EQ(status, CompilationJob::SUCCEEDED);
+   OptimizedCompilationInfo* info =
+       v8_flags.turboshaft_wasm_wrappers
+diff --git a/node.gyp b/node.gyp
+index 195fe541..4d791710 100644
+--- a/node.gyp
++++ b/node.gyp
+@@ -502,12 +502,12 @@
+           'target_conditions': [
+               ['_toolset=="host"', {
+                   'conditions': [
+-                      ['host_arch=="arm64"', {
++                      ['host_arch=="arm64" and OS!="ios"', {
+                           'cflags': ['-mbranch-protection=standard'],
+                       }],
+                   ],
+               }],
+-              ['_toolset=="target"', {
++              ['_toolset=="target" and OS!="ios"', {
+                   'cflags': ['-mbranch-protection=standard'],
+               }],
+           ],
+diff --git a/src/api/environment.cc b/src/api/environment.cc
+index ad323fc8..d91e3027 100644
+--- a/src/api/environment.cc
++++ b/src/api/environment.cc
+@@ -13,6 +13,9 @@
+ #include "node_v8_platform-inl.h"
+ #include "node_wasm_web_api.h"
+ #include "uv.h"
++#if defined(__APPLE__)
++#include <TargetConditionals.h>
++#endif
+ #ifdef NODE_ENABLE_VTUNE_PROFILING
+ #include "../deps/v8/src/third_party/vtune/v8-vtune.h"
+ #endif
+@@ -210,6 +213,18 @@ void SetIsolateCreateParamsForNode(Isolate::CreateParams* params) {
+     // heap based on the actual physical memory.
+     params->constraints.ConfigureDefaults(total_memory, 0);
+   }
++
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++  // On iOS targets, large executable code ranges can fail to reserve when
++  // JIT mappings are requested. Keep the default range smaller to allow
++  // non-jitless startup while preserving JIT/WebAssembly support.
++  if (params->constraints.code_range_size_in_bytes() == 0) {
++    // Older iOS JIT runtimes can fail large MAP_JIT code-range reservations.
++    // Keep this conservative to allow startup; V8 can still grow code space.
++    params->constraints.set_code_range_size_in_bytes(4 * 1024 * 1024);
++  }
++#endif
++
+   params->embedder_wrapper_object_index = BaseObject::InternalFields::kSlot;
+   params->embedder_wrapper_type_index = std::numeric_limits<int>::max();
+ 
+diff --git a/tools/v8_gypfiles/toolchain.gypi b/tools/v8_gypfiles/toolchain.gypi
+index 5bf396e0..5df66c93 100644
+--- a/tools/v8_gypfiles/toolchain.gypi
++++ b/tools/v8_gypfiles/toolchain.gypi
+@@ -291,7 +291,7 @@
+           'V8_TARGET_ARCH_ARM64',
+         ],
+         'conditions': [
+-          ['v8_control_flow_integrity==1', {
++          ['v8_control_flow_integrity==1 and OS!="ios"', {
+             'cflags': [ '-mbranch-protection=standard' ],
+           }],
+         ],
+diff --git a/tools/v8_gypfiles/v8.gyp b/tools/v8_gypfiles/v8.gyp
+index 09147465..3533d71d 100644
+--- a/tools/v8_gypfiles/v8.gyp
++++ b/tools/v8_gypfiles/v8.gyp
+@@ -1429,6 +1429,7 @@
+           'sources': [
+             '<(V8_ROOT)/src/base/debug/stack_trace_posix.cc',
+             '<(V8_ROOT)/src/base/platform/platform-darwin.cc',
++            '<(V8_ROOT)/src/base/platform/platform-ios.cc',
+           ]
+         }],
+         ['is_win', {
