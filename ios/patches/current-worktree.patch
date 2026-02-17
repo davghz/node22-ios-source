@@ -1,13 +1,22 @@
 diff --git a/common.gypi b/common.gypi
-index de83a56672..8712f6c366 100644
+index de83a56672..e6add8cd75 100644
 --- a/common.gypi
 +++ b/common.gypi
-@@ -669,6 +669,56 @@
+@@ -669,6 +669,65 @@
            }],
          ],
        }],
 +      ['OS=="ios"', {
-+        'defines': ['_DARWIN_USE_64_BIT_INODE=1'],
++        'defines': [
++          '_DARWIN_USE_64_BIT_INODE=1',
++          # V8's v8config.h auto-detection of V8_OS_IOS relies on
++          # TARGET_OS_IPHONE from <TargetConditionals.h>, but that header
++          # is not included early enough in all translation units. Force
++          # both defines so V8 takes the correct iOS code paths (mprotect
++          # skip, UseMapAsJittableMemory, code range limits).
++          'V8_OS_IOS=1',
++          'V8_TARGET_OS_IOS=1',
++        ],
 +        'cflags': [
 +          '-Wall',
 +          '-Wendif-labels',
@@ -103,6 +112,31 @@ index 1ae9f5a173..88a7936cb3 100644
      var currentParser = null;
      var currentBufferRef = null;
      var currentBufferSize = 0;
+diff --git a/deps/v8/include/v8config.h b/deps/v8/include/v8config.h
+index e649d8cce7..e4e297d3c4 100644
+--- a/deps/v8/include/v8config.h
++++ b/deps/v8/include/v8config.h
+@@ -94,13 +94,18 @@ path. Add it with -I<path> to the command line
+ # define V8_OS_POSIX 1
+ # define V8_OS_BSD 1
+ # define V8_OS_DARWIN 1
+-# if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
++# if defined(V8_OS_IOS)
++   // Already defined (e.g. via GYP/build system defines).
++#  ifndef V8_OS_STRING
++#   define V8_OS_STRING "ios"
++#  endif
++# elif defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+ #  define V8_OS_IOS 1
+ #  define V8_OS_STRING "ios"
+ # else
+ #  define V8_OS_MACOS 1
+ #  define V8_OS_STRING "macos"
+-# endif  // defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
++# endif
+ 
+ #elif defined(__CYGWIN__)
+ # define V8_OS_CYGWIN 1
 diff --git a/deps/v8/src/base/build_config.h b/deps/v8/src/base/build_config.h
 index 9ed4c8f102..b7303ef8fa 100644
 --- a/deps/v8/src/base/build_config.h
