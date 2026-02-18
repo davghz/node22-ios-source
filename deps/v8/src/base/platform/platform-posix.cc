@@ -144,20 +144,9 @@ int GetFlagsForMemoryPermission(OS::MemoryPermission access,
   // hardened runtime/memory protection is enabled, which is optional (via code
   // signing) on Intel-based Macs but mandatory on Apple silicon ones. See also
   // https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon.
-  //
-  // On iOS devices without pthread_jit_* support, MAP_JIT mappings can become
-  // write-protected in a way that this runtime cannot reliably toggle.
-  // Keep classic RWX/RX permission transitions in that environment.
-#if V8_OS_IOS
-  if (V8_HAS_PTHREAD_JIT_WRITE_PROTECT &&
-      access == OS::MemoryPermission::kNoAccessWillJitLater) {
-    flags |= MAP_JIT;
-  }
-#else
   if (access == OS::MemoryPermission::kNoAccessWillJitLater) {
     flags |= MAP_JIT;
   }
-#endif
 #endif  // V8_OS_DARWIN
   return flags;
 }
@@ -208,7 +197,13 @@ int GetProtectionFromMemoryPermission(OS::MemoryPermission access) {
     case OS::MemoryPermission::kReadWrite:
       return PROT_READ | PROT_WRITE;
     case OS::MemoryPermission::kReadWriteExecute:
+#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
+      // iOS enforces strict W^X: simultaneous W+X causes SIGBUS.
+      // Map RWX requests to RW; callers transition to RX when ready.
+      return PROT_READ | PROT_WRITE;
+#else
       return PROT_READ | PROT_WRITE | PROT_EXEC;
+#endif
     case OS::MemoryPermission::kReadExecute:
       return PROT_READ | PROT_EXEC;
   }
@@ -500,7 +495,14 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
   // Any failure that's not OOM likely indicates a bug in the caller (e.g.
   // using an invalid mapping) so attempt to catch that here to facilitate
   // debugging of these failures.
+#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
+  // On iOS with strict W^X, mprotect can legitimately fail with EACCES on
+  // reserved-but-uncommitted pages when SetPermissionsOnAllJitPages toggles
+  // protection. Return false and let the caller handle the failure.
+  if (ret != 0) return false;
+#else
   if (ret != 0) CHECK_EQ(ENOMEM, errno);
+#endif
 
   // MacOS 11.2 on Apple Silicon refuses to switch permissions from
   // rwx to none. Just use madvise instead.

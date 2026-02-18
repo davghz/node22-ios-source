@@ -60,7 +60,12 @@ vm_prot_t GetVMProtFromMemoryPermission(OS::MemoryPermission access) {
     case OS::MemoryPermission::kReadWrite:
       return VM_PROT_READ | VM_PROT_WRITE;
     case OS::MemoryPermission::kReadWriteExecute:
+#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
+      // iOS enforces strict W^X: simultaneous W+X causes SIGBUS.
+      return VM_PROT_READ | VM_PROT_WRITE;
+#else
       return VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE;
+#endif
     case OS::MemoryPermission::kReadExecute:
       return VM_PROT_READ | VM_PROT_EXECUTE;
   }

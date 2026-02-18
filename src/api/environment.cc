@@ -219,9 +219,11 @@ void SetIsolateCreateParamsForNode(Isolate::CreateParams* params) {
   // JIT mappings are requested. Keep the default range smaller to allow
   // non-jitless startup while preserving JIT/WebAssembly support.
   if (params->constraints.code_range_size_in_bytes() == 0) {
-    // Older iOS JIT runtimes can fail large MAP_JIT code-range reservations.
-    // Keep this conservative to allow startup; V8 can still grow code space.
-    params->constraints.set_code_range_size_in_bytes(4 * 1024 * 1024);
+    // 4MB was overly conservative and caused OOM during JIT compilation.
+    // 32MB is well within the 128MB max (globals.h) and sufficient for
+    // typical workloads. MAP_JIT is not used on device builds, so large
+    // reservations don't hit the MAP_JIT allocation failure path.
+    params->constraints.set_code_range_size_in_bytes(32 * 1024 * 1024);
   }
 #endif
 

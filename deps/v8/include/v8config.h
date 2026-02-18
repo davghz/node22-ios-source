@@ -91,16 +91,25 @@ path. Add it with -I<path> to the command line
 # define V8_OS_STRING "android"
 
 #elif defined(__APPLE__)
+// Include TargetConditionals.h so TARGET_OS_IPHONE is available for
+// distinguishing macOS from iOS. Without this, cross-compilation
+// (host=macOS, target=iOS) misidentifies the target as macOS.
+# include <TargetConditionals.h>
 # define V8_OS_POSIX 1
 # define V8_OS_BSD 1
 # define V8_OS_DARWIN 1
-# if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+# if defined(V8_OS_IOS)
+   // Already defined (e.g. via GYP/build system defines).
+#  ifndef V8_OS_STRING
+#   define V8_OS_STRING "ios"
+#  endif
+# elif defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
 #  define V8_OS_IOS 1
 #  define V8_OS_STRING "ios"
 # else
 #  define V8_OS_MACOS 1
 #  define V8_OS_STRING "macos"
-# endif  // defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+# endif
 
 #elif defined(__CYGWIN__)
 # define V8_OS_CYGWIN 1

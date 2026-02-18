@@ -190,11 +190,19 @@ class MutablePageMetadata : public MemoryChunkMetadata {
 
   static PageAllocator::Permission GetCodeModificationPermission() {
     DCHECK(!V8_HEAP_USE_PTHREAD_JIT_WRITE_PROTECT);
+    if (v8_flags.jitless) return PageAllocator::kReadWrite;
+#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
+    // iOS enforces strict W^X: pages with W+X simultaneously cause
+    // KERN_PROTECTION_FAILURE. Use RW here; RwxMemoryWriteScope toggles
+    // pages between RW and RX at scope boundaries.
+    return PageAllocator::kReadWrite;
+#else
     // On MacOS on ARM64 RWX permissions are allowed to be set only when
     // fast W^X is enabled (see V8_HEAP_USE_PTHREAD_JIT_WRITE_PROTECT).
-    return !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && !v8_flags.jitless
+    return !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
                ? PageAllocator::kReadWriteExecute
                : PageAllocator::kReadWrite;
+#endif
   }
 
   heap::ListNode<MutablePageMetadata>& list_node() { return list_node_; }

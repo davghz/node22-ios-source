@@ -17,6 +17,9 @@ if ! command -v xcrun >/dev/null 2>&1; then
 fi
 
 export IOS_MIN
+if [[ -z "${IOS_SDK_PATH:-}" && -d "/Users/davgz/theos/sdks/iPhoneOS13.7.sdk" ]]; then
+  export IOS_SDK_PATH="/Users/davgz/theos/sdks/iPhoneOS13.7.sdk"
+fi
 export CC_host="${ROOT_DIR}/ios/scripts/clang-host.sh"
 export CXX_host="${ROOT_DIR}/ios/scripts/clangxx-host.sh"
 export CC_target="${ROOT_DIR}/ios/scripts/clang-ios.sh"
@@ -34,13 +37,12 @@ if [[ "${CLEAN:-1}" == "1" ]]; then
   rm -rf out
 fi
 
-./configure \
+PYTHON="${PYTHON_BIN}" ./configure \
   --dest-cpu=arm64 \
   --dest-os=ios \
   --cross-compiling \
   --without-node-snapshot \
-  --openssl-no-asm \
-  --python="${PYTHON_BIN}"
+  --openssl-no-asm
 
 make -C out BUILDTYPE=Release V="${V:-0}" -j"${JOBS}"
 

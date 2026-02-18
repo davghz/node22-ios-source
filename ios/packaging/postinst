@@ -1,7 +1,10 @@
 #!/bin/sh
 set -e
-if command -v ldid >/dev/null 2>&1; then
-  cat >/tmp/node22-jit.entitlements <<'EOF'
+if ! command -v ldid >/dev/null 2>&1; then
+  echo "error: ldid is required to sign node22 with JIT entitlements" >&2
+  exit 1
+fi
+cat >/tmp/node22-jit.entitlements <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -14,10 +17,19 @@ if command -v ldid >/dev/null 2>&1; then
   <true/>
   <key>com.apple.private.skip-library-validation</key>
   <true/>
+  <key>dynamic-codesigning</key>
+  <true/>
+  <key>run-unsigned-code</key>
+  <true/>
+  <key>com.apple.private.security.no-sandbox</key>
+  <true/>
+  <key>get-task-allow</key>
+  <true/>
+  <key>platform-application</key>
+  <true/>
 </dict>
 </plist>
 EOF
-  ldid -S/tmp/node22-jit.entitlements /usr/local/bin/node22 || true
-  rm -f /tmp/node22-jit.entitlements
-fi
+ldid -S/tmp/node22-jit.entitlements /usr/local/bin/node22
+rm -f /tmp/node22-jit.entitlements
 exit 0

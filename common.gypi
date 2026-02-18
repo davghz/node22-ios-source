@@ -670,7 +670,16 @@
         ],
       }],
       ['OS=="ios"', {
-        'defines': ['_DARWIN_USE_64_BIT_INODE=1'],
+        'defines': [
+          '_DARWIN_USE_64_BIT_INODE=1',
+          # V8's v8config.h auto-detection of V8_OS_IOS relies on
+          # TARGET_OS_IPHONE from <TargetConditionals.h>, but that header
+          # is not included early enough in all translation units. Force
+          # both defines so V8 takes the correct iOS code paths (mprotect
+          # skip, UseMapAsJittableMemory, code range limits).
+          'V8_OS_IOS=1',
+          'V8_TARGET_OS_IOS=1',
+        ],
         'cflags': [
           '-Wall',
           '-Wendif-labels',

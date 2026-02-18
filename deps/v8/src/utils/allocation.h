@@ -186,14 +186,11 @@ inline bool SetPermissions(v8::PageAllocator* page_allocator, Address address,
 // allocating executable pages.
 enum class JitPermission { kNoJit, kMapAsJittable };
 
-// When pthread_jit_write_protect is unavailable on iOS devices, map-as-jitable
-// allocations end up permanently write-protected by the kernel. Force the
-// fallback path so we can rely on our own mprotect transitions.
 V8_INLINE bool UseMapAsJittableMemory() {
-#if defined(V8_TARGET_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
-  return false;
-#else
+#if V8_HAS_PTHREAD_JIT_WRITE_PROTECT
   return true;
+#else
+  return false;
 #endif
 }
 

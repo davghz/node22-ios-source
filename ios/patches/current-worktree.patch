@@ -1,13 +1,22 @@
 diff --git a/common.gypi b/common.gypi
-index de83a566..8712f6c3 100644
+index de83a56672..e6add8cd75 100644
 --- a/common.gypi
 +++ b/common.gypi
-@@ -669,6 +669,56 @@
+@@ -669,6 +669,65 @@
            }],
          ],
        }],
 +      ['OS=="ios"', {
-+        'defines': ['_DARWIN_USE_64_BIT_INODE=1'],
++        'defines': [
++          '_DARWIN_USE_64_BIT_INODE=1',
++          # V8's v8config.h auto-detection of V8_OS_IOS relies on
++          # TARGET_OS_IPHONE from <TargetConditionals.h>, but that header
++          # is not included early enough in all translation units. Force
++          # both defines so V8 takes the correct iOS code paths (mprotect
++          # skip, UseMapAsJittableMemory, code range limits).
++          'V8_OS_IOS=1',
++          'V8_TARGET_OS_IOS=1',
++        ],
 +        'cflags': [
 +          '-Wall',
 +          '-Wendif-labels',
@@ -60,7 +69,7 @@ index de83a566..8712f6c3 100644
          'ldflags': [
            '-Wl,--export-dynamic',
 diff --git a/common_node.gypi b/common_node.gypi
-index 0bfbf728..a39c60a3 100644
+index 0bfbf7283c..a39c60a39d 100644
 --- a/common_node.gypi
 +++ b/common_node.gypi
 @@ -6,7 +6,7 @@
@@ -73,7 +82,7 @@ index 0bfbf728..a39c60a3 100644
            'CLANG_CXX_LANGUAGE_STANDARD': 'gnu++20',  # -std=gnu++20
          },
 diff --git a/deps/undici/src/lib/dispatcher/client-h1.js b/deps/undici/src/lib/dispatcher/client-h1.js
-index 2b8fa05d..00fb9818 100644
+index 2b8fa05da2..00fb98186d 100644
 --- a/deps/undici/src/lib/dispatcher/client-h1.js
 +++ b/deps/undici/src/lib/dispatcher/client-h1.js
 @@ -124,7 +124,9 @@ async function lazyllhttp () {
@@ -88,7 +97,7 @@ index 2b8fa05d..00fb9818 100644
  let currentParser = null
  let currentBufferRef = null
 diff --git a/deps/undici/undici.js b/deps/undici/undici.js
-index 1ae9f5a1..88a7936c 100644
+index 1ae9f5a173..88a7936cb3 100644
 --- a/deps/undici/undici.js
 +++ b/deps/undici/undici.js
 @@ -5864,7 +5864,10 @@ var require_client_h1 = __commonJS({
@@ -103,8 +112,33 @@ index 1ae9f5a1..88a7936c 100644
      var currentParser = null;
      var currentBufferRef = null;
      var currentBufferSize = 0;
+diff --git a/deps/v8/include/v8config.h b/deps/v8/include/v8config.h
+index e649d8cce7..e4e297d3c4 100644
+--- a/deps/v8/include/v8config.h
++++ b/deps/v8/include/v8config.h
+@@ -94,13 +94,18 @@ path. Add it with -I<path> to the command line
+ # define V8_OS_POSIX 1
+ # define V8_OS_BSD 1
+ # define V8_OS_DARWIN 1
+-# if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
++# if defined(V8_OS_IOS)
++   // Already defined (e.g. via GYP/build system defines).
++#  ifndef V8_OS_STRING
++#   define V8_OS_STRING "ios"
++#  endif
++# elif defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+ #  define V8_OS_IOS 1
+ #  define V8_OS_STRING "ios"
+ # else
+ #  define V8_OS_MACOS 1
+ #  define V8_OS_STRING "macos"
+-# endif  // defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
++# endif
+ 
+ #elif defined(__CYGWIN__)
+ # define V8_OS_CYGWIN 1
 diff --git a/deps/v8/src/base/build_config.h b/deps/v8/src/base/build_config.h
-index 9ed4c8f1..b7303ef8 100644
+index 9ed4c8f102..b7303ef8fa 100644
 --- a/deps/v8/src/base/build_config.h
 +++ b/deps/v8/src/base/build_config.h
 @@ -28,6 +28,9 @@
@@ -118,7 +152,7 @@ index 9ed4c8f1..b7303ef8 100644
      (defined(V8_OS_MACOS) || (defined(V8_OS_IOS) && TARGET_OS_SIMULATOR))
  #define V8_HAS_PTHREAD_JIT_WRITE_PROTECT 1
 diff --git a/deps/v8/src/base/platform/platform-ios.cc b/deps/v8/src/base/platform/platform-ios.cc
-index f0fc1864..c4b414a2 100644
+index f0fc18648d..c4b414a237 100644
 --- a/deps/v8/src/base/platform/platform-ios.cc
 +++ b/deps/v8/src/base/platform/platform-ios.cc
 @@ -4,18 +4,20 @@
@@ -149,7 +183,7 @@ index f0fc1864..c4b414a2 100644
  #endif
  
 diff --git a/deps/v8/src/base/platform/platform-posix.cc b/deps/v8/src/base/platform/platform-posix.cc
-index 529a0730..620b8875 100644
+index 529a073040..620b887547 100644
 --- a/deps/v8/src/base/platform/platform-posix.cc
 +++ b/deps/v8/src/base/platform/platform-posix.cc
 @@ -144,9 +144,20 @@ int GetFlagsForMemoryPermission(OS::MemoryPermission access,
@@ -174,7 +208,7 @@ index 529a0730..620b8875 100644
    return flags;
  }
 diff --git a/deps/v8/src/common/code-memory-access.cc b/deps/v8/src/common/code-memory-access.cc
-index 94328a12..7425f25a 100644
+index 94328a128b..7425f25a5f 100644
 --- a/deps/v8/src/common/code-memory-access.cc
 +++ b/deps/v8/src/common/code-memory-access.cc
 @@ -12,7 +12,8 @@ ThreadIsolation::TrustedData ThreadIsolation::trusted_data_;
@@ -212,7 +246,7 @@ index 94328a12..7425f25a 100644
  WritableJitAllocation ThreadIsolation::RegisterJitAllocation(
      Address obj, size_t size, JitAllocationType type) {
 diff --git a/deps/v8/src/common/code-memory-access.h b/deps/v8/src/common/code-memory-access.h
-index 80d96bb4..954c76bf 100644
+index 80d96bb4ce..954c76bf3c 100644
 --- a/deps/v8/src/common/code-memory-access.h
 +++ b/deps/v8/src/common/code-memory-access.h
 @@ -127,7 +127,8 @@ class V8_NODISCARD RwxMemoryWriteScope {
@@ -237,7 +271,7 @@ index 80d96bb4..954c76bf 100644
    // Register a new JIT allocation for tracking and return a writable reference
    // to it. All writes should go through the returned WritableJitAllocation
 diff --git a/deps/v8/src/common/globals.h b/deps/v8/src/common/globals.h
-index 00e855c4..01c7d60e 100644
+index 00e855c472..01c7d60e10 100644
 --- a/deps/v8/src/common/globals.h
 +++ b/deps/v8/src/common/globals.h
 @@ -417,9 +417,14 @@ constexpr bool kPlatformRequiresCodeRange = true;
@@ -256,7 +290,7 @@ index 00e855c4..01c7d60e 100644
  #elif V8_TARGET_ARCH_X64
  constexpr size_t kMaximalCodeRangeSize =
 diff --git a/deps/v8/src/heap/code-range.cc b/deps/v8/src/heap/code-range.cc
-index cb336e15..e0db388b 100644
+index cb336e1575..e0db388b02 100644
 --- a/deps/v8/src/heap/code-range.cc
 +++ b/deps/v8/src/heap/code-range.cc
 @@ -361,10 +361,12 @@ uint8_t* CodeRange::RemapEmbeddedBuiltins(Isolate* isolate,
@@ -275,7 +309,7 @@ index cb336e15..e0db388b 100644
    if (!embedded_blob_code_copy) {
      V8::FatalProcessOutOfMemory(
 diff --git a/deps/v8/src/utils/allocation.cc b/deps/v8/src/utils/allocation.cc
-index dc8a3696..832dff93 100644
+index dc8a3696fa..832dff93b1 100644
 --- a/deps/v8/src/utils/allocation.cc
 +++ b/deps/v8/src/utils/allocation.cc
 @@ -214,10 +214,11 @@ VirtualMemory::VirtualMemory(v8::PageAllocator* page_allocator, size_t size,
@@ -294,7 +328,7 @@ index dc8a3696..832dff93 100644
        page_allocator_, hint, RoundUp(size, page_size), alignment, permissions));
    if (address != kNullAddress) {
 diff --git a/deps/v8/src/utils/allocation.h b/deps/v8/src/utils/allocation.h
-index c1f72ac3..b6c7e580 100644
+index c1f72ac3fe..b6c7e58001 100644
 --- a/deps/v8/src/utils/allocation.h
 +++ b/deps/v8/src/utils/allocation.h
 @@ -7,6 +7,7 @@
@@ -324,10 +358,10 @@ index c1f72ac3..b6c7e580 100644
  class VirtualMemory final {
   public:
 diff --git a/deps/v8/src/wasm/code-space-access.cc b/deps/v8/src/wasm/code-space-access.cc
-index b96c6cd4..b3e42921 100644
+index b96c6cd45f..01d3fd9027 100644
 --- a/deps/v8/src/wasm/code-space-access.cc
 +++ b/deps/v8/src/wasm/code-space-access.cc
-@@ -4,11 +4,25 @@
+@@ -4,11 +4,36 @@
  
  #include "src/wasm/code-space-access.h"
  
@@ -340,22 +374,33 @@ index b96c6cd4..b3e42921 100644
  CodeSpaceWriteScope::CodeSpaceWriteScope()
 -    : rwx_write_scope_("For wasm::CodeSpaceWriteScope.") {}
 +    : rwx_write_scope_("For wasm::CodeSpaceWriteScope.") {
++#if defined(V8_TARGET_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
++  // On iOS device builds (no pthread_jit_write_protect), JIT pages are
++  // allocated as RWX and stay that way. Toggling permissions via mprotect
++  // is both unnecessary and racy — concurrent threads can SIGBUS when a
++  // page is momentarily flipped to RX while another thread writes to it.
++#else
 +  if (!UseMapAsJittableMemory()) {
 +    CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
 +        PageAllocator::Permission::kReadWriteExecute));
 +  }
++#endif
 +}
 +
 +CodeSpaceWriteScope::~CodeSpaceWriteScope() {
++#if defined(V8_TARGET_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
++  // Pages stay RWX — see constructor comment.
++#else
 +  if (!UseMapAsJittableMemory()) {
 +    CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
 +        PageAllocator::Permission::kReadExecute));
 +  }
++#endif
 +}
  
  }  // namespace v8::internal::wasm
 diff --git a/deps/v8/src/wasm/code-space-access.h b/deps/v8/src/wasm/code-space-access.h
-index a6e29a81..050a2c20 100644
+index a6e29a815d..050a2c20d0 100644
 --- a/deps/v8/src/wasm/code-space-access.h
 +++ b/deps/v8/src/wasm/code-space-access.h
 @@ -43,6 +43,7 @@ class NativeModule;
@@ -367,7 +412,7 @@ index a6e29a81..050a2c20 100644
    // Disable copy constructor and copy-assignment operator, since this manages
    // a resource and implicit copying of the scope can yield surprising errors.
 diff --git a/deps/v8/src/wasm/function-compiler.cc b/deps/v8/src/wasm/function-compiler.cc
-index 8687e596..48e38f7d 100644
+index 8687e5962b..fc538d644b 100644
 --- a/deps/v8/src/wasm/function-compiler.cc
 +++ b/deps/v8/src/wasm/function-compiler.cc
 @@ -13,6 +13,7 @@
@@ -378,25 +423,16 @@ index 8687e596..48e38f7d 100644
  #include "src/wasm/compilation-environment-inl.h"
  #include "src/wasm/turboshaft-graph-interface.h"
  #include "src/wasm/wasm-code-manager.h"
-@@ -229,7 +230,16 @@ void JSToWasmWrapperCompilationUnit::Execute() {
+@@ -229,6 +230,7 @@ void JSToWasmWrapperCompilationUnit::Execute() {
  }
  
  Handle<Code> JSToWasmWrapperCompilationUnit::Finalize() {
 +  CodeSpaceWriteScope code_space_write_scope;
-+#if defined(V8_OS_IOS)
-+  CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
-+      PageAllocator::Permission::kReadWriteExecute));
-+#endif
    CompilationJob::Status status = job_->FinalizeJob(isolate_);
-+#if defined(V8_OS_IOS)
-+  CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
-+      PageAllocator::Permission::kReadExecute));
-+#endif
    CHECK_EQ(status, CompilationJob::SUCCEEDED);
    OptimizedCompilationInfo* info =
-       v8_flags.turboshaft_wasm_wrappers
 diff --git a/node.gyp b/node.gyp
-index 195fe541..4d791710 100644
+index 195fe541bc..4d79171063 100644
 --- a/node.gyp
 +++ b/node.gyp
 @@ -502,12 +502,12 @@
@@ -415,7 +451,7 @@ index 195fe541..4d791710 100644
                }],
            ],
 diff --git a/src/api/environment.cc b/src/api/environment.cc
-index ad323fc8..d91e3027 100644
+index ad323fc800..ae6dbdd398 100644
 --- a/src/api/environment.cc
 +++ b/src/api/environment.cc
 @@ -13,6 +13,9 @@
@@ -428,7 +464,7 @@ index ad323fc8..d91e3027 100644
  #ifdef NODE_ENABLE_VTUNE_PROFILING
  #include "../deps/v8/src/third_party/vtune/v8-vtune.h"
  #endif
-@@ -210,6 +213,18 @@ void SetIsolateCreateParamsForNode(Isolate::CreateParams* params) {
+@@ -210,6 +213,20 @@ void SetIsolateCreateParamsForNode(Isolate::CreateParams* params) {
      // heap based on the actual physical memory.
      params->constraints.ConfigureDefaults(total_memory, 0);
    }
@@ -438,9 +474,11 @@ index ad323fc8..d91e3027 100644
 +  // JIT mappings are requested. Keep the default range smaller to allow
 +  // non-jitless startup while preserving JIT/WebAssembly support.
 +  if (params->constraints.code_range_size_in_bytes() == 0) {
-+    // Older iOS JIT runtimes can fail large MAP_JIT code-range reservations.
-+    // Keep this conservative to allow startup; V8 can still grow code space.
-+    params->constraints.set_code_range_size_in_bytes(4 * 1024 * 1024);
++    // 4MB was overly conservative and caused OOM during JIT compilation.
++    // 32MB is well within the 128MB max (globals.h) and sufficient for
++    // typical workloads. MAP_JIT is not used on device builds, so large
++    // reservations don't hit the MAP_JIT allocation failure path.
++    params->constraints.set_code_range_size_in_bytes(32 * 1024 * 1024);
 +  }
 +#endif
 +
@@ -448,7 +486,7 @@ index ad323fc8..d91e3027 100644
    params->embedder_wrapper_type_index = std::numeric_limits<int>::max();
  
 diff --git a/tools/v8_gypfiles/toolchain.gypi b/tools/v8_gypfiles/toolchain.gypi
-index 5bf396e0..5df66c93 100644
+index 5bf396e074..5df66c93d0 100644
 --- a/tools/v8_gypfiles/toolchain.gypi
 +++ b/tools/v8_gypfiles/toolchain.gypi
 @@ -291,7 +291,7 @@
@@ -461,7 +499,7 @@ index 5bf396e0..5df66c93 100644
            }],
          ],
 diff --git a/tools/v8_gypfiles/v8.gyp b/tools/v8_gypfiles/v8.gyp
-index 09147465..3533d71d 100644
+index 0914746541..3533d71d72 100644
 --- a/tools/v8_gypfiles/v8.gyp
 +++ b/tools/v8_gypfiles/v8.gyp
 @@ -1429,6 +1429,7 @@

@@ -231,15 +231,7 @@ void JSToWasmWrapperCompilationUnit::Execute() {
 
 Handle<Code> JSToWasmWrapperCompilationUnit::Finalize() {
   CodeSpaceWriteScope code_space_write_scope;
-#if defined(V8_OS_IOS)
-  CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
-      PageAllocator::Permission::kReadWriteExecute));
-#endif
   CompilationJob::Status status = job_->FinalizeJob(isolate_);
-#if defined(V8_OS_IOS)
-  CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
-      PageAllocator::Permission::kReadExecute));
-#endif
   CHECK_EQ(status, CompilationJob::SUCCEEDED);
   OptimizedCompilationInfo* info =
       v8_flags.turboshaft_wasm_wrappers

@@ -14,7 +14,7 @@ CodeSpaceWriteScope::CodeSpaceWriteScope()
     : rwx_write_scope_("For wasm::CodeSpaceWriteScope.") {
   if (!UseMapAsJittableMemory()) {
     CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
-        PageAllocator::Permission::kReadWriteExecute));
+        PageAllocator::Permission::kReadWrite));
   }
 }
 
