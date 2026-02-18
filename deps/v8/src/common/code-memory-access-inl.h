@@ -272,7 +272,35 @@ void RwxMemoryWriteScope::SetExecutable() {
   }
 }
 
-#else  // !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && !V8_TRY_USE_PKU_JIT_WRITE_PROTECT
+#elif defined(V8_OS_IOS)
+// iOS device without pthread_jit_write_protect_np: enforce strict W^X using
+// process-wide mprotect via SetPermissionsOnAllJitPages. Pages are allocated
+// as RW (via GetCodeModificationPermission) and toggled to RX when the
+// outermost write scope closes.
+
+// static
+bool RwxMemoryWriteScope::IsSupported() { return true; }
+
+// static
+void RwxMemoryWriteScope::SetWritable() {
+  if (code_space_write_nesting_level_ == 0) {
+    ThreadIsolation::SetPermissionsOnAllJitPages(
+        PageAllocator::Permission::kReadWrite);
+  }
+  code_space_write_nesting_level_++;
+}
+
+// static
+void RwxMemoryWriteScope::SetExecutable() {
+  code_space_write_nesting_level_--;
+  if (code_space_write_nesting_level_ == 0) {
+    ThreadIsolation::SetPermissionsOnAllJitPages(
+        PageAllocator::Permission::kReadExecute);
+  }
+}
+
+#else  // !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && !V8_HAS_PKU_JIT_WRITE_PROTECT
+       // && !V8_OS_IOS
 
 // static
 bool RwxMemoryWriteScope::IsSupported() { return false; }

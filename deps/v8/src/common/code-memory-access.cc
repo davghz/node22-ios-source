@@ -10,10 +10,11 @@ namespace internal {
 
 ThreadIsolation::TrustedData ThreadIsolation::trusted_data_;
 
-#if V8_HAS_PTHREAD_JIT_WRITE_PROTECT || V8_HAS_PKU_JIT_WRITE_PROTECT
+#if V8_HAS_PTHREAD_JIT_WRITE_PROTECT || V8_HAS_PKU_JIT_WRITE_PROTECT || \
+    defined(V8_OS_IOS)
 thread_local int RwxMemoryWriteScope::code_space_write_nesting_level_ = 0;
 #endif  // V8_HAS_PTHREAD_JIT_WRITE_PROTECT || \
-        // V8_HAS_PKU_JIT_WRITE_PROTECT
+        // V8_HAS_PKU_JIT_WRITE_PROTECT || V8_OS_IOS
 
 #if V8_HAS_PKU_JIT_WRITE_PROTECT
 
@@ -472,15 +473,25 @@ bool ThreadIsolation::MakeExecutable(Address address, size_t size) {
 // static
 bool ThreadIsolation::SetPermissionsOnAllJitPages(
     PageAllocator::Permission permission) {
+  // During early initialization, jit_pages_mutex_ may not be allocated yet.
+  // No JIT pages exist at that point, so there is nothing to protect.
+  if (!trusted_data_.jit_pages_mutex_) return true;
   base::MutexGuard guard(trusted_data_.jit_pages_mutex_);
   PageAllocator* page_allocator = GetPlatformPageAllocator();
   for (const auto& it : *trusted_data_.jit_pages_) {
     JitPageReference jit_page(it.second, it.first);
     if (!page_allocator->SetPermissions(reinterpret_cast<void*>(it.first),
                                         jit_page.Size(), permission)) {
+#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT
+      // On iOS with strict W^X, mprotect can fail on reserved-but-uncommitted
+      // portions of large JIT page ranges (e.g. WASM code spaces). Skip these
+      // failures; committed pages that need the permission change will succeed.
+      continue;
+#else
       // Ignore failures on empty reserved pages; these may still be
       // inaccessible placeholders and don't contain writable allocations yet.
       if (!jit_page.Empty()) return false;
+#endif
     }
   }
   return true;
