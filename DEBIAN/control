@@ -1,0 +1,10 @@
+Package: nodejs22-ios
+Version: 22.12.0-18
+Section: utils
+Priority: optional
+Architecture: iphoneos-arm
+Maintainer: davgz
+Depends: firmware (>= 13.0), ldid
+Description: Node.js v22.12.0 for iOS arm64 (side-by-side install as node22)
+ Provides /usr/local/bin/node22 plus npm22/npx22 wrappers.
+ Includes bundled npm and ldid-signed binary with iOS JIT/unsigned-exec entitlements.
