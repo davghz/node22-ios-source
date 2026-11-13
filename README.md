@@ -1,4 +1,4 @@
-# node22-ios-source
+# Node.js for iOS
 
 Node.js v22.12.0 cross-compiled for jailbroken iOS (arm64).
 
