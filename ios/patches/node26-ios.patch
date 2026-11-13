@@ -1,0 +1,483 @@
+--- a/common.gypi
++++ b/common.gypi
+@@ -802,6 +802,20 @@
+           }],
+         ],
+       }],
++      ['OS=="ios"', {
++        'defines': ['_DARWIN_USE_64_BIT_INODE=1'],
++        'libraries': ['-framework CoreFoundation'],
++        'cflags': ['-Wall', '-Wextra', '-Wno-unused-parameter'],
++        'cflags_cc': ['-fno-exceptions', '-fno-strict-aliasing', '-std=gnu++20'],
++        'xcode_settings': {
++          'GCC_ENABLE_CPP_EXCEPTIONS': 'NO',
++          'GCC_ENABLE_CPP_RTTI': 'YES',
++          'GCC_STRICT_ALIASING': 'NO',
++          'CLANG_CXX_LANGUAGE_STANDARD': 'gnu++20',
++          'CLANG_CXX_LIBRARY': 'libc++',
++          'USE_HEADERMAP': 'NO',
++        },
++      }],
+       ['OS=="freebsd"', {
+         'ldflags': [
+           '-Wl,--export-dynamic',
+--- a/deps/cares/config/darwin/ares_config.h
++++ b/deps/cares/config/darwin/ares_config.h
+@@ -329,7 +329,9 @@
+ #define HAVE_SYS_PARAM_H 1
+ 
+ /* Define to 1 if you have the <sys/random.h> header file. */
++#if __has_include(<sys/random.h>)
+ #define HAVE_SYS_RANDOM_H 1
++#endif
+ 
+ /* Define to 1 if you have the <sys/select.h> header file. */
+ #define HAVE_SYS_SELECT_H 1
+@@ -570,4 +572,4 @@
+ /* #undef _LARGE_FILES */
+ 
+ /* Define to `unsigned int' if <sys/types.h> does not define. */
+-/* #undef size_t */
+\ No newline at end of file
++/* #undef size_t */
+--- /dev/null
++++ b/deps/crates/cargo_build_ios.py
+@@ -0,0 +1,21 @@
++"""Keep host and iOS Temporal static libraries in separate target directories."""
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++
++toolset, intermediate, build_type, target_os = sys.argv[1:]
++target_dir = Path(intermediate).resolve() / ('crates-' + toolset)
++args = [os.environ.get('CARGO', 'cargo'), 'rustc', '--frozen', '--target-dir', str(target_dir)]
++profile = 'release' if build_type == 'Release' else 'debug'
++if profile == 'release':
++    args.append('--release')
++triple = 'aarch64-apple-ios' if target_os == 'ios' and toolset == 'target' else None
++if triple:
++    args += ['--target', triple]
++subprocess.run(args, check=True)
++if triple:
++    destination = target_dir / profile / 'libnode_crates.a'
++    destination.parent.mkdir(parents=True, exist_ok=True)
++    shutil.copy2(target_dir / triple / profile / 'libnode_crates.a', destination)
+--- a/deps/crates/crates.gyp
++++ b/deps/crates/crates.gyp
+@@ -24,7 +24,7 @@
+           },
+         }, {
+           'variables': {
+-            'node_crates_libpath': '<(SHARED_INTERMEDIATE_DIR)/<(cargo_rust_target)/release/<(STATIC_LIB_PREFIX)node_crates<(STATIC_LIB_SUFFIX)',
++            'node_crates_libpath': '<(SHARED_INTERMEDIATE_DIR)/crates->(_toolset)/release/<(STATIC_LIB_PREFIX)node_crates<(STATIC_LIB_SUFFIX)',
+           },
+         }],
+       ],
+@@ -39,7 +39,7 @@
+           },
+         }, {
+           'variables': {
+-            'node_crates_libpath': '<(SHARED_INTERMEDIATE_DIR)/<(cargo_rust_target)/debug/<(STATIC_LIB_PREFIX)node_crates<(STATIC_LIB_SUFFIX)',
++            'node_crates_libpath': '<(SHARED_INTERMEDIATE_DIR)/crates->(_toolset)/debug/<(STATIC_LIB_PREFIX)node_crates<(STATIC_LIB_SUFFIX)',
+           },
+         }],
+       ],
+@@ -101,12 +101,12 @@
+                 '<(node_crates_libpath)'
+               ],
+               'action': [
+-                '<(cargo)',
+-                'rustc',
+-                '<@(cargo_build_flags)',
+-                '--frozen',
+-                '--target-dir',
+-                '<(SHARED_INTERMEDIATE_DIR)'
++                '<(python)',
++                'cargo_build_ios.py',
++                '>(_toolset)',
++                '<(SHARED_INTERMEDIATE_DIR)',
++                '<(build_type)',
++                '<(OS)',
+               ],
+             }
+           ],
+--- a/deps/v8/src/base/platform/platform-posix.cc
++++ b/deps/v8/src/base/platform/platform-posix.cc
+@@ -160,7 +160,7 @@
+     flags |= MAP_LAZY;
+ #endif  // V8_OS_QNX
+   }
+-#if V8_OS_DARWIN
++#if V8_OS_DARWIN && !(V8_OS_IOS && !V8_HAS_BECORE_JIT_WRITE_PROTECT)
+   // MAP_JIT is required to obtain writable and executable pages when the
+   // hardened runtime/memory protection is enabled, which is optional (via code
+   // signing) on Intel-based Macs but mandatory on Apple silicon ones. See also
+--- a/deps/v8/src/common/code-memory-access-inl.h
++++ b/deps/v8/src/common/code-memory-access-inl.h
+@@ -381,6 +381,28 @@
+       ThreadIsolation::pkey(), base::MemoryProtectionKey::kDisableWrite);
+ }
+ 
++#elif defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && \
++    !V8_HAS_BECORE_JIT_WRITE_PROTECT
++
++// Classic jailbroken iOS has no per-thread JIT write-protection API. Match
++// the existing port's nested process-wide W^X scopes.
++bool RwxMemoryWriteScope::IsSupported() { return true; }
++
++void RwxMemoryWriteScope::SetWritable() {
++  if (code_space_write_nesting_level_++ == 0) {
++    CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
++        PageAllocator::Permission::kReadWrite));
++  }
++}
++
++void RwxMemoryWriteScope::SetExecutable() {
++  DCHECK_GT(code_space_write_nesting_level_, 0);
++  if (--code_space_write_nesting_level_ == 0) {
++    CHECK(ThreadIsolation::SetPermissionsOnAllJitPages(
++        PageAllocator::Permission::kReadExecute));
++  }
++}
++
+ #else  // !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && !V8_TRY_USE_PKU_JIT_WRITE_PROTECT
+ 
+ // static
+--- a/deps/v8/src/common/code-memory-access.cc
++++ b/deps/v8/src/common/code-memory-access.cc
+@@ -17,6 +17,11 @@
+ namespace internal {
+ 
+ ThreadIsolation::TrustedData ThreadIsolation::trusted_data_;
++
++#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && \
++    !V8_HAS_BECORE_JIT_WRITE_PROTECT
++thread_local int RwxMemoryWriteScope::code_space_write_nesting_level_ = 0;
++#endif
+ 
+ #if V8_HAS_PKU_JIT_WRITE_PROTECT
+ 
+@@ -499,6 +504,40 @@
+ #endif  // V8_HAS_PKU_JIT_WRITE_PROTECT
+ }
+ 
++#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && \
++    !V8_HAS_BECORE_JIT_WRITE_PROTECT
++// static
++bool ThreadIsolation::SetPermissionsOnAllJitPages(
++    PageAllocator::Permission permission) {
++  // Several Wasm compilation workers may hold outer write scopes at once.
++  // Restore RX only after the last writer has finished.
++  static base::Mutex scope_mutex;
++  static size_t active_writers = 0;
++  base::MutexGuard scopes(&scope_mutex);
++  if (permission == PageAllocator::Permission::kReadWrite) {
++    if (active_writers++ != 0) return true;
++  } else {
++    CHECK_EQ(permission, PageAllocator::Permission::kReadExecute);
++    CHECK_GT(active_writers, 0);
++    if (--active_writers != 0) return true;
++  }
++  if (!trusted_data_.jit_pages_mutex_) return true;
++  base::MutexGuard guard(trusted_data_.jit_pages_mutex_);
++  PageAllocator* allocator = GetPlatformPageAllocator();
++  const size_t page_size = allocator->AllocatePageSize();
++  for (const auto& entry : *trusted_data_.jit_pages_) {
++    JitPageReference page(entry.second, entry.first);
++    const Address start = RoundDown(page.Address(), page_size);
++    const Address end = RoundUp(page.End(), page_size);
++    if (!allocator->SetPermissions(reinterpret_cast<void*>(start), end - start,
++                                   permission)) {
++      return false;
++    }
++  }
++  return true;
++}
++#endif
++
+ // static
+ WritableJitAllocation ThreadIsolation::RegisterJitAllocation(
+     Address obj, size_t size, JitAllocationType type, bool enforce_write_api) {
+@@ -611,7 +650,10 @@
+ // static
+ std::optional<Address> ThreadIsolation::StartOfJitAllocationAt(
+     Address inner_pointer) {
++#if !defined(V8_OS_IOS) || V8_HAS_PTHREAD_JIT_WRITE_PROTECT || \
++    V8_HAS_BECORE_JIT_WRITE_PROTECT
+   CFIMetadataWriteScope write_scope("StartOfJitAllocationAt");
++#endif
+   std::optional<JitPageReference> page = TryLookupJitPage(inner_pointer, 1);
+   if (!page) {
+     return {};
+@@ -655,7 +697,10 @@
+ 
+ // static
+ bool ThreadIsolation::CanLookupStartOfJitAllocationAt(Address inner_pointer) {
++#if !defined(V8_OS_IOS) || V8_HAS_PTHREAD_JIT_WRITE_PROTECT || \
++    V8_HAS_BECORE_JIT_WRITE_PROTECT
+   CFIMetadataWriteScope write_scope("CanLookupStartOfJitAllocationAt");
++#endif
+ 
+   // Try to lock the pages mutex and the mutex of the page itself to prevent
+   // potential dead locks. The profiler can try to do a lookup from a signal
+--- a/deps/v8/src/common/code-memory-access.h
++++ b/deps/v8/src/common/code-memory-access.h
+@@ -119,6 +119,11 @@
+   // scope classes that affect executable pages permissions.
+   V8_INLINE static void SetWritable();
+   V8_INLINE static void SetExecutable();
++
++#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && \
++    !V8_HAS_BECORE_JIT_WRITE_PROTECT
++  V8_EXPORT_PRIVATE static thread_local int code_space_write_nesting_level_;
++#endif
+ };
+ 
+ class WritableJitPage;
+@@ -155,6 +160,13 @@
+   // Make a page executable. Needs to be registered first. Should only be called
+   // if Enabled() is true.
+   V8_NODISCARD static bool MakeExecutable(Address address, size_t size);
++
++#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && \
++    !V8_HAS_BECORE_JIT_WRITE_PROTECT
++  // Older iOS devices need classic RW/RX transitions instead of MAP_JIT.
++  V8_NODISCARD static bool SetPermissionsOnAllJitPages(
++      PageAllocator::Permission permission);
++#endif
+ 
+   // Register a new JIT allocation for tracking and return a writable reference
+   // to it. All writes should go through the returned WritableJitAllocation
+--- a/deps/v8/src/heap/code-range.cc
++++ b/deps/v8/src/heap/code-range.cc
+@@ -383,7 +383,8 @@
+ // required for recommit.
+ // iOS cannot adjust page permissions for MAP_JIT'd pages, they are set as RWX
+ // at the start.
+-#if !defined(V8_OS_WIN) && !defined(V8_OS_IOS)
++#if !defined(V8_OS_WIN) && \
++    (!defined(V8_OS_IOS) || !V8_HAS_BECORE_JIT_WRITE_PROTECT)
+   if (params.page_initialization_mode ==
+       base::PageInitializationMode::kRecommitOnly) {
+     void* base = reinterpret_cast<void*>(page_allocator_->begin() +
+@@ -394,9 +395,16 @@
+                                            size)) {
+         return false;
+       }
+-    } else if (!params.page_allocator->SetPermissions(
+-                   base, size, PageAllocator::kReadWriteExecute)) {
+-      return false;
++    } else {
++#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && \
++    !V8_HAS_BECORE_JIT_WRITE_PROTECT
++      constexpr auto permissions = PageAllocator::kReadWrite;
++#else
++      constexpr auto permissions = PageAllocator::kReadWriteExecute;
++#endif
++      if (!params.page_allocator->SetPermissions(base, size, permissions)) {
++        return false;
++      }
+     }
+     if (immutable) {
+ #ifdef DEBUG
+--- a/deps/v8/src/heap/mutable-page.h
++++ b/deps/v8/src/heap/mutable-page.h
+@@ -58,8 +58,13 @@
+   };
+ 
+   static PageAllocator::Permission GetCodeModificationPermission() {
++#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && \
++    !V8_HAS_BECORE_JIT_WRITE_PROTECT
++    return PageAllocator::kReadWrite;
++#else
+     return v8_flags.jitless ? PageAllocator::kReadWrite
+                             : PageAllocator::kReadWriteExecute;
++#endif
+   }
+ 
+   // Only correct if the pointer is in the first kPageSize of the MemoryChunk.
+--- a/deps/v8/src/wasm/wasm-code-manager.cc
++++ b/deps/v8/src/wasm/wasm-code-manager.cc
+@@ -2161,7 +2161,7 @@
+ 
+ namespace {
+ v8::PageAllocator* GetPageAllocator() {
+-#ifdef V8_OS_IOS
++#if defined(V8_OS_IOS) && V8_HAS_BECORE_JIT_WRITE_PROTECT
+   // On iOS, MAP_JIT can only be used once per process, and the CodeRange
+   // already uses it. Therefore, Wasm code must be allocated from the
+   // CodeRange's page allocator instead of the platform page allocator.
+@@ -2186,7 +2186,7 @@
+ WasmCodeManager::WasmCodeManager()
+     : max_committed_code_space_(v8_flags.wasm_max_committed_code_mb * MB),
+       critical_committed_code_space_(max_committed_code_space_ / 2),
+-#ifdef V8_OS_IOS
++#if defined(V8_OS_IOS) && V8_HAS_BECORE_JIT_WRITE_PROTECT
+       // On iOS, the CodeRange is not yet initialized when WasmCodeManager is
+       // constructed, so we cannot query it for a hint address.
+       next_code_space_hint_(kNullAddress)
+@@ -2237,11 +2237,17 @@
+     }
+   }
+ 
+-  TRACE_HEAP("Setting rwx permissions for 0x%" PRIxPTR ":0x%" PRIxPTR "\n",
++#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && \
++    !V8_HAS_BECORE_JIT_WRITE_PROTECT
++  constexpr auto permissions = PageAllocator::kReadWrite;
++#else
++  constexpr auto permissions = PageAllocator::kReadWriteExecute;
++#endif
++  TRACE_HEAP("Committing code memory 0x%" PRIxPTR ":0x%" PRIxPTR "\n",
+              region.begin(), region.end());
+   bool success = GetPageAllocator()->RecommitPages(
+       reinterpret_cast<void*>(region.begin()), region.size(),
+-      PageAllocator::kReadWriteExecute);
++      permissions);
+ 
+   if (V8_UNLIKELY(!success)) {
+     auto oom_detail = base::FormattedString{} << "region size: "
+@@ -2325,7 +2331,8 @@
+   // required for recommit.
+   // iOS cannot adjust page permissions for MAP_JIT'd pages, they are set as RWX
+   // at the start.
+-#if !defined(V8_OS_WIN) && !defined(V8_OS_IOS)
++#if !defined(V8_OS_WIN) && \
++    (!defined(V8_OS_IOS) || !V8_HAS_BECORE_JIT_WRITE_PROTECT)
+   if (MemoryProtectionKeysEnabled()) {
+ #if V8_HAS_PKU_JIT_WRITE_PROTECT
+     if (ThreadIsolation::Enabled()) {
+@@ -2339,8 +2346,16 @@
+     UNREACHABLE();
+ #endif
+   } else {
++#if defined(V8_OS_IOS) && !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && \
++    !V8_HAS_BECORE_JIT_WRITE_PROTECT
++    // New regions can be registered while an outer write scope is already
++    // active. Start writable; the last scope makes all registered code RX.
++    constexpr auto permissions = PageAllocator::kReadWrite;
++#else
++    constexpr auto permissions = PageAllocator::kReadWriteExecute;
++#endif
+     CHECK(SetPermissions(GetPageAllocator(), mem.address(), mem.size(),
+-                         PageAllocator::kReadWriteExecute));
++                         permissions));
+   }
+   page_allocator->DiscardSystemPages(reinterpret_cast<void*>(mem.address()),
+                                      mem.size());
+--- a/node.gyp
++++ b/node.gyp
+@@ -563,12 +563,12 @@
+           'target_conditions': [
+               ['_toolset=="host"', {
+                   'conditions': [
+-                      ['host_arch=="arm64"', {
++                      ['host_arch=="arm64" and OS!="ios"', {
+                           'cflags': ['-mbranch-protection=standard'],
+                       }],
+                   ],
+               }],
+-              ['_toolset=="target"', {
++              ['_toolset=="target" and OS!="ios"', {
+                   'cflags': ['-mbranch-protection=standard'],
+               }],
+           ],
+--- a/src/crypto/crypto_context.cc
++++ b/src/crypto/crypto_context.cc
+@@ -23,7 +23,10 @@
+ #include <openssl/x509.h>
+ #include <openssl/x509v3.h>
+ #ifdef __APPLE__
++#include <TargetConditionals.h>
++#if !TARGET_OS_IPHONE
+ #include <Security/Security.h>
++#endif
+ #endif
+ 
+ #ifdef _WIN32
+@@ -320,7 +323,7 @@
+ // Licensed under a BSD-style license
+ // See https://chromium.googlesource.com/chromium/src/+/HEAD/LICENSE for
+ // details.
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !TARGET_OS_IPHONE
+ TrustStatus IsTrustDictionaryTrustedForPolicy(CFDictionaryRef trust_dict,
+                                               bool is_self_issued) {
+   // Trust settings may be scoped to a single application
+@@ -622,7 +625,7 @@
+   }
+   CFRelease(curr_anchors);
+ }
+-#endif  // __APPLE__
++#endif  // macOS desktop keychain trust settings
+ 
+ #ifdef _WIN32
+ 
+@@ -836,7 +839,11 @@
+   if (!credentials::SafeGetenv(X509_get_default_cert_file_env(), &cert_file)) {
+     // This is usually /etc/ssl/cert.pem if we are using the OpenSSL statically
+     // linked and built with default configurations.
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++    cert_file = "/var/jb/etc/ssl/cert.pem";
++#else
+     cert_file = X509_get_default_cert_file();
++#endif
+   }
+ 
+   std::string cert_dir;
+@@ -844,7 +851,11 @@
+   if (!credentials::SafeGetenv(X509_get_default_cert_dir_env(), &cert_dir)) {
+     // This is usually /etc/ssl/certs if we are using the OpenSSL statically
+     // linked and built with default configurations.
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++    cert_dir = "/var/jb/etc/ssl/certs";
++#else
+     cert_dir = X509_get_default_cert_dir();
++#endif
+   }
+ 
+   if (!cert_file.empty()) {
+@@ -891,13 +902,13 @@
+ 
+ static std::vector<ncrypto::X509Pointer> InitializeSystemStoreCertificates() {
+   std::vector<ncrypto::X509Pointer> system_store_certs;
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !TARGET_OS_IPHONE
+   ReadMacOSKeychainCertificates(&system_store_certs);
+ #endif
+ #ifdef _WIN32
+   ReadWindowsCertificates(&system_store_certs);
+ #endif
+-#if !defined(__APPLE__) && !defined(_WIN32)
++#if (!defined(__APPLE__) || TARGET_OS_IPHONE) && !defined(_WIN32)
+   GetOpenSSLSystemCertificates(&system_store_certs);
+ #endif
+   return system_store_certs;
+@@ -1088,7 +1099,15 @@
+     }
+   }
+   if (ssl_openssl_cert_store) {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++    std::vector<ncrypto::X509Pointer> openssl_certs;
++    GetOpenSSLSystemCertificates(&openssl_certs);
++    for (const auto& cert : openssl_certs) {
++      CHECK_EQ(1, X509_STORE_add_cert(store, cert.get()));
++    }
++#else
+     CHECK_EQ(1, X509_STORE_set_default_paths(store));
++#endif
+   } else {
+     for (const auto& cert : GetBundledRootCertificates()) {
+       CHECK_EQ(1, X509_STORE_add_cert(store, cert.get()));
+--- a/tools/v8_gypfiles/toolchain.gypi
++++ b/tools/v8_gypfiles/toolchain.gypi
+@@ -283,7 +283,7 @@
+           'V8_TARGET_ARCH_ARM64',
+         ],
+         'conditions': [
+-          ['v8_control_flow_integrity==1', {
++          ['v8_control_flow_integrity==1 and OS!="ios"', {
+             'cflags': [ '-mbranch-protection=standard' ],
+           }],
+         ],

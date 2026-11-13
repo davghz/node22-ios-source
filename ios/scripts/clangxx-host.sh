@@ -30,7 +30,7 @@ for a in "$@"; do
   esac
 done
 
-"$REAL_CXX" -isysroot "$MACOS_SDK" -mmacosx-version-min=11.0 "${args[@]}"
+"$REAL_CXX" -isysroot "$MACOS_SDK" -mmacosx-version-min="${MACOSX_DEPLOYMENT_TARGET:-11.0}" "${args[@]}"
 if [ "$is_compile" -eq 0 ] && [ -n "$output_file" ] && [ -f "$output_file" ]; then
   codesign -s - "$output_file" 2>/dev/null || true
 fi
