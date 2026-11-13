@@ -2,6 +2,24 @@
 
 For **rootless iOS 15 or later**, use the [rootless package and instructions](ios/ROOTLESS.md).
 
+
+<!-- latest-rootless-download -->
+## Latest download
+
+| Release | Rootless package | SHA256 |
+| --- | --- | --- |
+| [Node.js 26.13.1](https://github.com/davghz/node22-ios-source/releases/tag/v26.13.1-1-rootless) | [Download .deb](https://github.com/davghz/node22-ios-source/releases/download/v26.13.1-1-rootless/nodejs22-ios_26.13.1-1%2Brootless_iphoneos-arm64.deb) | [Checksum](https://github.com/davghz/node22-ios-source/releases/download/v26.13.1-1-rootless/nodejs22-ios_26.13.1-1%2Brootless_iphoneos-arm64.deb.sha256) |
+
+Requires **jailbroken rootless iOS 15 or later** (`iphoneos-arm64`).
+Install from the download folder with APT to resolve dependencies:
+
+```sh
+sudo apt install ./nodejs22-ios_26.13.1-1+rootless_iphoneos-arm64.deb
+```
+
+npm is packaged separately in [npm-ios-source](https://github.com/davghz/npm-ios-source). On classic iOS 15, concurrent Wasm execution and compilation across worker isolates is unsupported; see [runtime details](ios/ROOTLESS.md).
+<!-- /latest-rootless-download -->
+
 The current rootless package builds **Node.js 26.13.1** for arm64 iOS 15 and later.
 See [the build and install instructions](ios/ROOTLESS.md).
 
