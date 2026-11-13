@@ -1,8 +1,13 @@
-# node22-ios-source
+# Node.js for iOS
 
 For **rootless iOS 15 or later**, use the [rootless package and instructions](ios/ROOTLESS.md).
 
-Node.js v22.12.0 cross-compiled for jailbroken iOS (arm64).
+The current rootless package builds **Node.js 26.13.1** for arm64 iOS 15 and later.
+See [the build and install instructions](ios/ROOTLESS.md).
+
+## Legacy Node.js 22 source workflow
+
+The original Node.js v22.12.0 source and rootful build instructions are retained below.
 
 ## What it is
 
